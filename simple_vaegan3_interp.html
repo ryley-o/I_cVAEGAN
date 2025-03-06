@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script>
+        // example tokenData
+        let tokenData = {"tokenId":"42","hash":"0xe3ef8180b7bed9cbd3b53082a98ecf0ea8681e3d62cee9a96ba34f7946cce051"}
+    </script>
+    <style type="text/css">html {
+        height: 100%;
+      }
+      body {
+        min-height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      canvas {
+        padding: 0;
+        margin: auto;
+        display: block;
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+      }</style>
+</head>
+<body>
+    <canvas id="js"></canvas>
+    <script>
+        class Random {
+            constructor() {
+                this.useA = false;
+                let sfc32 = function (uint128Hex) {
+                    let a = parseInt(uint128Hex.substring(0, 8), 16);
+                    let b = parseInt(uint128Hex.substring(8, 16), 16);
+                    let c = parseInt(uint128Hex.substring(16, 24), 16);
+                    let d = parseInt(uint128Hex.substring(24, 32), 16);
+                    return function () {
+                        a |= 0;
+                        b |= 0;
+                        c |= 0;
+                        d |= 0;
+                        let t = (((a + b) | 0) + d) | 0;
+                        d = (d + 1) | 0;
+                        a = b ^ (b >>> 9);
+                        b = (c + (c << 3)) | 0;
+                        c = (c << 21) | (c >>> 11);
+                        c = (c + t) | 0;
+                        return (t >>> 0) / 4294967296;
+                    };
+                };
+                // seed prngA with first half of tokenData.hash
+                this.prngA = new sfc32(tokenData.hash.substring(2, 34));
+                // seed prngB with second half of tokenData.hash
+                this.prngB = new sfc32(tokenData.hash.substring(34, 66));
+                for (let i = 0; i < 1e6; i += 2) {
+                    this.prngA();
+                    this.prngB();
+                }
+            }
+            // random number between 0 (inclusive) and 1 (exclusive)
+            random_dec() {
+                this.useA = !this.useA;
+                return this.useA ? this.prngA() : this.prngB();
+            }
+            // random number between a (inclusive) and b (exclusive)
+            random_num(a, b) {
+                return a + (b - a) * this.random_dec();
+            }
+            // random integer between a (inclusive) and b (inclusive)
+            // requires a < b for proper probability distribution
+            random_int(a, b) {
+                return Math.floor(this.random_num(a, b + 1));
+            }
+            // random boolean with p as percent liklihood of true
+            random_bool(p) {
+                return this.random_dec() < p;
+            }
+            // random value in an array of items
+            random_choice(list) {
+                return list[this.random_int(0, list.length - 1)];
+            }
+        }
+
+        // Configuration
+        const MODEL_URL = 'web_model_revb/tfjs_vaegan3/tfjs/model.json';
+        const MODEL_INFO_URL = 'web_model_revb/tfjs_vaegan3/model_info.json';
+        
+        // Global variables
+        let model = null;
+        let modelInfo = null;
+        let canvas = document.querySelector("canvas");
+        let ctx = canvas.getContext('2d');
+        let R = new Random();
+
+        const urlParams = new URLSearchParams(window.location.search);
+
+        function getDim() {
+            let w = innerWidth,
+                h = innerHeight,
+                pd = devicePixelRatio;
+            urlParams.get("w") && ((w = parseInt(urlParams.get("w"), 10)), (pd = 1)),
+                urlParams.get("h") && ((h = parseInt(urlParams.get("h"), 10)), (pd = 1));
+            var isPortrait = h > w;
+            return {
+                w: w * pd,
+                h: h * pd,
+                mn: Math.min(w, h) * pd,
+                mx: Math.max(w, h) * pd,
+                pd: pd,
+                w2: (w * pd) / 2,
+                h2: (h * pd) / 2,
+                mn2: (Math.min(w, h) / 2) * pd,
+                mx2: (Math.max(w, h) / 2) * pd,
+                avg: ((w + h) / 2) * pd,
+                isPortrait: isPortrait,
+            };
+        }
+        
+        // Wait for the DOM to load before initializing
+        document.addEventListener('DOMContentLoaded', function() {
+            init();
+        });
+
+        // film grain noise
+        function applyFilmGrain(intensity = 50) {
+            let ctx = canvas.getContext("2d");
+            let width = canvas.width, height = canvas.height;
+
+            // Create a new transparent noise layer
+            let noiseCanvas = document.createElement("canvas");
+            noiseCanvas.width = width;
+            noiseCanvas.height = height;
+            let noiseCtx = noiseCanvas.getContext("2d");
+
+            let noiseImageData = noiseCtx.createImageData(width, height);
+            let noisePixels = noiseImageData.data;
+
+            for (let i = 0; i < noisePixels.length; i += 4) {
+                let grain = 128 + (R.random_dec() - 0.5) * intensity; // Generate structured grain
+                noisePixels[i] = grain;     // R
+                noisePixels[i + 1] = grain; // G
+                noisePixels[i + 2] = grain; // B
+                noisePixels[i + 3] = 50;    // Alpha (semi-transparent)
+            }
+
+            noiseCtx.putImageData(noiseImageData, 0, 0);
+
+            // Blend the noise onto the original canvas
+            ctx.globalAlpha = 0.4;  // Adjust blend strength
+            ctx.drawImage(noiseCanvas, 0, 0);
+            ctx.globalAlpha = 1.0;
+        }
+
+        // Create input vector [latent, conditions]
+        function getLatentVector() {
+            // temporarily loop prng times for testing
+            // Note - remove random loop before production, use token hash data instead
+            const randomLoops = Math.floor(Math.random() * 10_000);
+            console.log("randomLoops", randomLoops);
+            for (let i = 0; i < randomLoops; i++) {
+                R.random_dec();
+            }
+            // start with all zeros
+            let input = new Array(16).fill(0.0);
+            // 10 emotions
+            const emotIndex = R.random_int(0, 9);
+            const emotIndex2 = R.random_int(0, 9);
+            let blendAmount = R.random_dec();
+            if (emotIndex == emotIndex2) {
+                blendAmount = 1.0;
+            }
+            input[emotIndex+1] = blendAmount;
+            if (emotIndex != emotIndex2) {
+                input[emotIndex2+1] = 1.0 - blendAmount;
+            }
+            // 4 classes
+            const classIndex = R.random_int(0, 3);
+            const classIndex2 = R.random_int(0, 3);
+            let classBlendAmount = R.random_dec();
+            if (classIndex == classIndex2) {
+                classBlendAmount = 1.0;
+            }
+            input[classIndex+1 + 10] = classBlendAmount;
+            if (classIndex != classIndex2) {
+                input[classIndex2+1 + 10] = 1.0 - classBlendAmount;
+            }
+            // always set unused final conditional to 1
+            input[14+1] = 1.0;
+            // log emotion 
+            emotions = ["anger", "confusion", "curiosity", "disgust", "fear", "joy", "sadness", "serenity", "surprise", "suspicion"];
+            console.log("emotion a: ", emotions[emotIndex]);
+            console.log("emotion b: ", emotions[emotIndex2]);
+            return input;
+        }
+        
+        // Initialize the application
+        async function init() {
+            document.body.style.backgroundColor = "#030303";
+            const dim = getDim();
+            const { w, h, pd } = dim;
+            const size = Math.min(w/pd, h/pd);
+            canvas.width = size;
+            canvas.height = size;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            await loadModel();
+            const input = getLatentVector();
+            console.log("input", input);
+            await generateImage(input);
+            applyFilmGrain(150);
+        }
+        
+        // Load model information and the TensorFlow.js model
+        async function loadModel() {
+            try {
+                const response = await fetch(MODEL_INFO_URL);
+                if (!response.ok) {
+                    throw new Error(`Failed to load model info: ${response.statusText}`);
+                }
+                
+                modelInfo = await response.json();
+                console.log("Model info loaded successfully:", modelInfo);
+                
+                // Load the actual model
+                model = await loadVanillaModel(MODEL_URL);
+                console.log("Model loaded successfully");
+            } catch (error) {
+                console.error("Error loading model:", error);
+                model = null;
+            }
+        }
+        
+        // Load model using vanilla JavaScript
+        async function loadVanillaModel(modelUrl) {
+            console.log("Loading model from URL:", modelUrl);
+            
+            // Extract base path from the model URL to find weight files
+            const basePath = modelUrl.substring(0, modelUrl.lastIndexOf('/') + 1);
+            console.log("Base path for weights:", basePath);
+            
+            // Fetch and parse model.json
+            const response = await fetch(modelUrl);
+            if (!response.ok) {
+                throw new Error(`Failed to load model config: ${response.statusText}`);
+            }
+            
+            const modelConfig = await response.json();
+            console.log("Model config loaded:", modelConfig);
+            
+            try {
+                // Create an instance of the VAEGAN3Generator using the model config
+                const generator = await VAEGAN3Generator.load(basePath, modelConfig);
+                console.log("Weights loaded successfully");
+                return generator;
+            } catch (error) {
+                console.error("Error loading model:", error);
+                throw error;
+            }
+        }
+        
+        // Tensor class for data manipulation
+        class Tensor {
+            constructor(shape, data = null) {
+                this.shape = shape;
+                
+                // Calculate total size from shape
+                const size = shape.reduce((a, b) => a * b, 1);
+                
+                // Initialize data
+                if (data) {
+                    if (data.length !== size) {
+                        throw new Error(`Data length ${data.length} doesn't match tensor size ${size}`);
+                    }
+                    this.data = Float32Array.from(data);
+                } else {
+                    this.data = new Float32Array(size);
+                }
+            }
+            
+            // Create a tensor filled with zeros
+            static zeros(shape) {
+                return new Tensor(shape);
+            }
+            
+            // Create a tensor filled with random values
+            static random(shape, min = -1, max = 1) {
+                const size = shape.reduce((a, b) => a * b, 1);
+                const data = new Float32Array(size);
+                for (let i = 0; i < size; i++) {
+                    data[i] = min + Math.random() * (max - min);
+                }
+                return new Tensor(shape, data);
+            }
+            
+            // Reshape the tensor to a new shape
+            reshape(newShape) {
+                // Ensure the sizes match
+                const oldSize = this.shape.reduce((a, b) => a * b, 1);
+                const newSize = newShape.reduce((a, b) => a * b, 1);
+                
+                if (oldSize !== newSize) {
+                    throw new Error(`Cannot reshape tensor of size ${oldSize} to size ${newSize}`);
+                }
+                
+                // Create a new tensor with the same data but different shape
+                const result = new Tensor(newShape);
+                result.data.set(this.data);
+                return result;
+            }
+        }
+        
+        // VAEGAN3Generator class for model inference
+        class VAEGAN3Generator {
+            constructor(weights) {
+                this.weights = weights;
+                console.log("Generator initialized with weights:", Object.keys(weights));
+            }
+            
+            // Load the model from model.json and weight files
+            static async load(basePath, modelJson) {
+                try {
+                    console.log("Loading weights from path:", basePath);
+                    
+                    // Extract weight manifest
+                    const weightManifest = modelJson.weightsManifest;
+                    console.log("Weight manifest:", weightManifest);
+                    
+                    // Load all weight data
+                    const weights = {};
+                    
+                    for (const group of weightManifest) {
+                        for (const path of group.paths) {
+                            const weightPath = basePath + path;
+                            console.log("Loading weight file:", weightPath);
+                            
+                            const response = await fetch(weightPath);
+                            if (!response.ok) {
+                                throw new Error(`Failed to load weights: ${weightPath} - ${response.status} ${response.statusText}`);
+                            }
+                            
+                            const buffer = await response.arrayBuffer();
+                            console.log(`Loaded weight file ${path}, size: ${buffer.byteLength} bytes`);
+                            
+                            // Process weights from this file
+                            await VAEGAN3Generator.processWeights(weights, buffer, group.weights);
+                        }
+                    }
+                    
+                    return new VAEGAN3Generator(weights);
+                } catch (error) {
+                    console.error("Error loading model:", error);
+                    throw error;
+                }
+            }
+            
+            // Process weights from a buffer
+            static async processWeights(weightsObj, buffer, weightsMetadata) {
+                const weightData = new Uint8Array(buffer);
+                
+                // Parse weights from this file
+                let offset = 0;
+                for (const weightMetadata of weightsMetadata) {
+                    const { name, shape, dtype, quantization } = weightMetadata;
+                    console.log(`Processing weight: ${name}, shape: ${shape}, dtype: ${dtype}`);
+                    
+                    // Calculate weight size
+                    const size = shape.reduce((a, b) => a * b, 1);
+                    
+                    // Handle different dtypes and dequantization
+                    if (quantization) {
+                        // Get quantized data
+                        const quantizedData = new Uint8Array(size);
+                        for (let i = 0; i < size; i++) {
+                            if (offset + i >= weightData.length) {
+                                throw new Error(`Offset out of bounds: ${offset + i} >= ${weightData.length}`);
+                            }
+                            quantizedData[i] = weightData[offset + i];
+                        }
+                        offset += size;
+                        
+                        // Dequantize the weights
+                        const dequantizedData = new Float32Array(size);
+                        const { min, scale } = quantization;
+                        for (let i = 0; i < size; i++) {
+                            dequantizedData[i] = min + scale * quantizedData[i];
+                        }
+                        
+                        // Store the weights
+                        weightsObj[name] = {
+                            data: dequantizedData,
+                            shape
+                        };
+                        
+                    } else if (dtype === 'float32') {
+                        // Direct float32 - 4 bytes per element
+                        const floatData = new Float32Array(size);
+                        const dataView = new DataView(buffer);
+                        
+                        for (let i = 0; i < size; i++) {
+                            const byteOffset = offset + i * 4;
+                            if (byteOffset + 4 > buffer.byteLength) {
+                                throw new Error(`Float32 data out of bounds: ${byteOffset + 4} > ${buffer.byteLength}`);
+                            }
+                            floatData[i] = dataView.getFloat32(byteOffset, true); // true for little-endian
+                        }
+                        offset += size * 4;
+                        
+                        weightsObj[name] = {
+                            data: floatData,
+                            shape
+                        };
+                    } else {
+                        console.warn(`Unsupported dtype: ${dtype} for weight ${name}`);
+                    }
+                }
+            }
+            
+            // Generate an image from a latent vector and conditions
+            predict(input) {
+                if (!Array.isArray(input) || input.length !== 16) {
+                    throw new Error("Input must be an array of 16 values (1 latent + 15 conditions)");
+                }
+                
+                try {
+                    // Create input tensor of shape [1, 16]
+                    const inputTensor = new Tensor([1, 16], input);
+                    
+                    // Find the required weights
+                    let denseWeights, denseBias, conv1Weights, conv1Bias, conv2Weights, conv2Bias;
+                    
+                    // Look for weights with appropriate names
+                    const weightKeys = Object.keys(this.weights);
+                    console.log("Available weights:", weightKeys);
+                    
+                    for (const key of weightKeys) {
+                        if (key.includes('dense') && key.includes('kernel')) {
+                            denseWeights = this.weights[key];
+                            console.log("Found dense weights:", key, denseWeights.shape);
+                        } else if (key.includes('dense') && key.includes('bias')) {
+                            denseBias = this.weights[key];
+                            console.log("Found dense bias:", key, denseBias.shape);
+                        } else if (key.includes('conv2d_8') && key.includes('kernel')) {
+                            // First conv layer (conv2d_8)
+                            conv1Weights = this.weights[key];
+                            console.log("Found conv1 weights:", key, conv1Weights.shape);
+                        } else if (key.includes('conv2d_8') && key.includes('bias')) {
+                            conv1Bias = this.weights[key]; 
+                            console.log("Found conv1 bias:", key, conv1Bias.shape);
+                        } else if (key.includes('conv2d_9') && key.includes('kernel')) {
+                            // Second conv layer (conv2d_9)
+                            conv2Weights = this.weights[key];
+                            console.log("Found conv2 weights:", key, conv2Weights.shape);
+                        } else if (key.includes('conv2d_9') && key.includes('bias')) {
+                            conv2Bias = this.weights[key];
+                            console.log("Found conv2 bias:", key, conv2Bias.shape);
+                        }
+                    }
+                    
+                    // Verify we have all weights
+                    if (!denseWeights || !denseBias || !conv1Weights || !conv1Bias || !conv2Weights || !conv2Bias) {
+                        throw new Error("Couldn't find all required weights");
+                    }
+                    
+                    // Forward pass through the model
+                    
+                    // 1. Dense layer
+                    let x = this.dense(inputTensor, denseWeights, denseBias);
+                    x = this.relu(x);
+                    
+                    // 2. Reshape to [1, 16, 16, 64]
+                    x = x.reshape([1, 16, 16, 64]);
+                    
+                    // 3. Upsample to [1, 32, 32, 64]
+                    x = this.upsample2d(x);
+                    
+                    // 4. Conv2D (64 -> 32 channels)
+                    x = this.conv2d(x, conv1Weights, conv1Bias);
+                    x = this.relu(x);
+                    
+                    // 5. Upsample to [1, 64, 64, 32]
+                    x = this.upsample2d(x);
+                    
+                    // 6. Conv2D (32 -> 3 channels) with tanh activation
+                    x = this.conv2d(x, conv2Weights, conv2Bias);
+                    x = this.sigmoid(x); // Use sigmoid for image output (0-1)
+                    
+                    // Convert to RGB array with alpha (0-255) for canvas
+                    const rgbArray = new Uint8ClampedArray(64 * 64 * 4);
+                    for (let h = 0; h < 64; h++) {
+                        for (let w = 0; w < 64; w++) {
+                            const rgbIdx = (h * 64 + w) * 4;
+                            for (let c = 0; c < 3; c++) {
+                                // Get value from tensor (channels last)
+                                const tensorIdx = ((0 * 64 + h) * 64 + w) * 3 + c;
+                                const value = x.data[tensorIdx];
+                                
+                                // Scale to 0-255 and clamp
+                                rgbArray[rgbIdx + c] = Math.round(Math.max(0, Math.min(1, value)) * 255);
+                            }
+                            // Set alpha to 255 (fully opaque)
+                            rgbArray[rgbIdx + 3] = 255;
+                        }
+                    }
+                    
+                    return rgbArray;
+                    
+                } catch (error) {
+                    console.error("Error in model prediction:", error);
+                    throw error;
+                }
+            }
+            
+            // Dense layer (matrix multiplication)
+            dense(input, weights, bias) {
+                const [batchSize, inputDim] = input.shape;
+                const outputDim = bias.data.length; // Use bias length for output dimensions
+                
+                console.log(`Dense layer: input shape ${input.shape}, weights shape ${weights.shape}, output dim ${outputDim}`);
+                
+                const output = new Tensor([batchSize, outputDim]);
+                
+                // Check if weight dimensions look right
+                if (weights.shape[0] !== inputDim && weights.shape[1] !== outputDim) {
+                    // Need to transpose weights
+                    console.log(`Transposing weights. Original: ${weights.shape}`);
+                }
+                
+                for (let b = 0; b < batchSize; b++) {
+                    for (let o = 0; o < outputDim; o++) {
+                        let sum = bias.data[o];
+                        
+                        for (let i = 0; i < inputDim; i++) {
+                            // Matrix multiplication: input × weights
+                            const inputIdx = b * inputDim + i;
+                            let weightIdx;
+                            
+                            if (weights.shape[0] === inputDim) {
+                                // weights is [inputDim, outputDim]
+                                weightIdx = i * outputDim + o;
+                            } else {
+                                // weights is [outputDim, inputDim]
+                                weightIdx = o * inputDim + i;
+                            }
+                            
+                            if (weightIdx >= weights.data.length) {
+                                console.error(`Weight index out of bounds: ${weightIdx} >= ${weights.data.length}`);
+                                continue;
+                            }
+                            
+                            sum += input.data[inputIdx] * weights.data[weightIdx];
+                        }
+                        
+                        output.data[b * outputDim + o] = sum;
+                    }
+                }
+                
+                return output;
+            }
+            
+            // Upsample 2D layer (nearest neighbor)
+            upsample2d(input) {
+                const [batch, height, width, channels] = input.shape;
+                const newHeight = height * 2;
+                const newWidth = width * 2;
+                
+                const output = new Tensor([batch, newHeight, newWidth, channels]);
+                
+                for (let b = 0; b < batch; b++) {
+                    for (let h = 0; h < height; h++) {
+                        for (let w = 0; w < width; w++) {
+                            for (let c = 0; c < channels; c++) {
+                                const value = input.data[((b * height + h) * width + w) * channels + c];
+                                
+                                // Copy value to 2x2 area in output
+                                for (let dy = 0; dy < 2; dy++) {
+                                    for (let dx = 0; dx < 2; dx++) {
+                                        const outH = h * 2 + dy;
+                                        const outW = w * 2 + dx;
+                                        const outputIdx = ((b * newHeight + outH) * newWidth + outW) * channels + c;
+                                        output.data[outputIdx] = value;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                return output;
+            }
+            
+            // 2D convolution with SAME padding
+            conv2d(input, kernel, bias) {
+                const [batch, height, width, inputChannels] = input.shape;
+                const [kernelH, kernelW, _, outputChannels] = kernel.shape;
+                const output = new Tensor([batch, height, width, outputChannels]);
+                
+                // Calculate padding
+                const padH = Math.floor(kernelH / 2);
+                const padW = Math.floor(kernelW / 2);
+                
+                for (let b = 0; b < batch; b++) {
+                    for (let h = 0; h < height; h++) {
+                        for (let w = 0; w < width; w++) {
+                            for (let oc = 0; oc < outputChannels; oc++) {
+                                let sum = bias.data[oc];
+                                
+                                // Convolve at this position
+                                for (let kh = 0; kh < kernelH; kh++) {
+                                    for (let kw = 0; kw < kernelW; kw++) {
+                                        const ih = h + kh - padH;
+                                        const iw = w + kw - padW;
+                                        
+                                        // Check bounds (SAME padding with zeros)
+                                        if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
+                                            for (let ic = 0; ic < inputChannels; ic++) {
+                                                const inputIdx = ((b * height + ih) * width + iw) * inputChannels + ic;
+                                                const kernelIdx = ((kh * kernelW + kw) * inputChannels + ic) * outputChannels + oc;
+                                                sum += input.data[inputIdx] * kernel.data[kernelIdx];
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                const outputIdx = ((b * height + h) * width + w) * outputChannels + oc;
+                                output.data[outputIdx] = sum;
+                            }
+                        }
+                    }
+                }
+                
+                return output;
+            }
+            
+            // ReLU activation function
+            relu(x) {
+                const output = new Tensor(x.shape);
+                for (let i = 0; i < x.data.length; i++) {
+                    output.data[i] = Math.max(0, x.data[i]);
+                }
+                return output;
+            }
+            
+            // Sigmoid activation function
+            sigmoid(x) {
+                const output = new Tensor(x.shape);
+                for (let i = 0; i < x.data.length; i++) {
+                    output.data[i] = 1 / (1 + Math.exp(-x.data[i]));
+                }
+                return output;
+            }
+        }
+        
+        // Generate an image based on current slider values
+        async function generateImage(input) {
+            if (!model) {
+                return;
+            }
+            
+            try {
+                // Generate image
+                console.log("Input vector:", input);
+                
+                // Use our vanilla model to predict
+                const rgbaData = model.predict(input);
+                
+                if (!rgbaData) {
+                    throw new Error("Model returned null or undefined");
+                }
+                
+                // Draw the image to canvas
+                const imageData = new ImageData(rgbaData, 64, 64);
+                ctx.putImageData(imageData, 0, 0);
+                
+                // // Upscale always
+                if (true) {
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = 64;
+                    tempCanvas.height = 64;
+                    const tempCtx = tempCanvas.getContext('2d');
+                    tempCtx.putImageData(imageData, 0, 0);
+                    
+                    // Draw scaled up image
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
+                }
+            
+                
+            } catch (error) {
+                console.error("Error generating image:", error);
+            }
+        }
+    </script>
+</body>
+</html> 
