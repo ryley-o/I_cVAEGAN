@@ -29,5 +29,8 @@ python3 export_vaegan3_revb_tfjs.py
 python3 -m http.server 8000
 
 # Run the model in the browser, refresh for new images
-open http://localhost:8000/simple_vaegan3_revb_interp.py
+open http://localhost:8000/simple_vaegan3_interp.html
+
+# if you want to generate a grid of output images, run the following command
+python3 generate_grid_vaegan3.py
 ```

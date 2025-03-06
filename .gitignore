@@ -1,1 +1,8 @@
 .DS_Store
+checkpoints_vaegan3_revb
+grid_samples_vaegan3
+samples_vaegan3_revb
+models_revb
+web_model_revb
+*.pyc
+__pycache__
