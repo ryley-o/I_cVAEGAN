@@ -1,0 +1,6 @@
+tensorflow-macos==2.15.0
+tensorflow-metal==1.1.0
+tensorflowjs==4.15.0
+numpy==1.24.3
+pillow>=9.0.0
+matplotlib>=3.7.0 

@@ -1,6 +1,8 @@
-# I_cVAEGAN
+# I. by ryley-o.eth
 
-# Conditional Variational Autoencoder Generative Adversarial Network Hybrid(cVAE-GAN)
+# A model on the blockchain
+
+This repository documents the source code and training process for aConditional Variational Autoencoder Generative Adversarial Network Hybrid(cVAE-GAN) model used for the generative art project, _I. by ryley-o.eth_.
 
 A small, efficient conditional cVAE-GAN implementation for 64x64 images using TensorFlow/Keras. This implementation is designed to be easily quantizable and deployable to blockchain via TensorFlow.js.
 
@@ -17,6 +19,8 @@ A small, efficient conditional cVAE-GAN implementation for 64x64 images using Te
 - [x] Deployable to blockchain
 
 ## Usage
+
+You can create the model that was uploaded to the blockchain by running the following commands:
 
 ```python
 # Train the model
